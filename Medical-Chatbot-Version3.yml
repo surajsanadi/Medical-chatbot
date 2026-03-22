@@ -61,10 +61,16 @@ stages:
       displayName: Cache pip dependencies
 
     # ---------------------------------------------------
+    # 🚨 CRITICAL FIX: Disable Sonar auto branch injection
+    # ---------------------------------------------------
+    - script: |
+        echo "##vso[task.setvariable variable=SONARQUBE_SCANNER_PARAMS]{}"
+      displayName: Disable SonarQube auto params
+
+    # ---------------------------------------------------
     # SonarQube Prepare
     # ---------------------------------------------------
     - task: SonarQubePrepare@7
-      condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
       inputs:
         SonarQube: 'ado-sonar'
         scannerMode: 'CLI'
@@ -74,7 +80,7 @@ stages:
         cliSources: '.'
         extraProperties: |
           sonar.exclusions=**/venv/**,**/.git/**,**/__pycache__/**,**/*.pyc,**/data/**,**/models/**,**/static/**,**/templates/**
-          
+          sonar.python.coverage.reportPaths=coverage.xml
 
     # ---------------------------------------------------
     # Setup Python environment
@@ -94,25 +100,23 @@ stages:
       displayName: Setup Python Environment
 
     # ---------------------------------------------------
-    # Unit Tests
+    # Unit Tests + Coverage
     # ---------------------------------------------------
     - script: |
         source venv/bin/activate
-        pip install pytest
-        pytest
-      displayName: Run Unit Tests
+        pip install pytest pytest-cov
+        pytest --cov=. --cov-report=xml
+      displayName: Run Unit Tests with Coverage
 
     # ---------------------------------------------------
     # SonarQube Analyze
     # ---------------------------------------------------
     - task: SonarQubeAnalyze@7
-      condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
 
     # ---------------------------------------------------
     # SonarQube Publish
     # ---------------------------------------------------
     - task: SonarQubePublish@7
-      condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
       inputs:
         pollingTimeoutSec: '300'
 
@@ -131,18 +135,12 @@ stages:
 
     steps:
 
-    # ---------------------------------------------------
-    # Install Trivy
-    # ---------------------------------------------------
     - script: |
         sudo apt-get update
         sudo apt-get install curl -y
         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
       displayName: Install Trivy
 
-    # ---------------------------------------------------
-    # Scan Source Code (Filesystem)
-    # ---------------------------------------------------
     - script: |
         ./bin/trivy fs .
       displayName: Scan Source Code
@@ -161,9 +159,6 @@ stages:
 
     steps:
 
-    # ---------------------------------------------------
-    # Build Docker Image
-    # ---------------------------------------------------
     - task: AzureCLI@2
       displayName: Build Image
       inputs:
@@ -176,18 +171,12 @@ stages:
 
           docker build -t $(acrName).azurecr.io/$(imageRepository):$(tag) .
 
-    # ---------------------------------------------------
-    # Install Trivy
-    # ---------------------------------------------------
     - script: |
         sudo apt-get update
         sudo apt-get install curl -y
         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
       displayName: Install Trivy
 
-    # ---------------------------------------------------
-    # Scan Docker Image
-    # ---------------------------------------------------
     - script: |
         ./bin/trivy image \
           --exit-code 0 \
@@ -197,9 +186,6 @@ stages:
           $(acrName).azurecr.io/$(imageRepository):$(tag)
       displayName: Scan Docker Image
 
-    # ---------------------------------------------------
-    # Push Image to ACR
-    # ---------------------------------------------------
     - task: AzureCLI@2
       displayName: Push Image to ACR
       inputs:
@@ -226,9 +212,6 @@ stages:
 
     steps:
 
-    # ---------------------------------------------------
-    # Deploy new image to green container app
-    # ---------------------------------------------------
     - task: AzureCLI@2
       displayName: Deploy to Green Slot
       inputs:
@@ -258,9 +241,6 @@ stages:
 
     steps:
 
-    # ---------------------------------------------------
-    # Verify green slot is healthy before traffic switch
-    # ---------------------------------------------------
     - task: AzureCLI@2
       displayName: Verify Green Health Endpoint
       inputs:
@@ -283,16 +263,16 @@ stages:
             sleep 10
           done
 
-          echo "=== Green slot health check failed after 5 attempts ==="
+          echo "=== Green slot health check failed ==="
           exit 1
 
 
 # ======================================================
-# SWITCH TRAFFIC — APPLICATION GATEWAY → GREEN
+# SWITCH TRAFFIC — APPLICATION GATEWAY → GREEN → BLUE
 # ======================================================
 
 - stage: SwitchTraffic
-  displayName: Switch Traffic to Green
+  displayName: Switch Traffic
   dependsOn: HealthCheck
 
   jobs:
@@ -300,11 +280,8 @@ stages:
 
     steps:
 
-    # ---------------------------------------------------
-    # Step 1: Point Application Gateway to GREEN slot
-    # ---------------------------------------------------
     - task: AzureCLI@2
-      displayName: Switch Traffic to Green
+      displayName: Switch to Green
       inputs:
         azureSubscription: $(azureSubscription)
         scriptType: bash
@@ -323,13 +300,8 @@ stages:
             --name $(appGatewayBackendPool) \
             --servers $GREEN_FQDN
 
-          echo "=== Traffic switched to green slot: $GREEN_FQDN ==="
-
-    # ---------------------------------------------------
-    # Step 2: Update BLUE container with new image
-    # ---------------------------------------------------
     - task: AzureCLI@2
-      displayName: Promote Green to Blue
+      displayName: Promote to Blue
       inputs:
         azureSubscription: $(azureSubscription)
         scriptType: bash
@@ -341,40 +313,8 @@ stages:
             --resource-group $(resourceGroup) \
             --image $(acrName).azurecr.io/$(imageRepository):$(tag)
 
-          echo "=== Blue slot updated with new image ==="
-
-    # ---------------------------------------------------
-    # Step 3: Wait for BLUE slot to be ready       ← NEW
-    # ---------------------------------------------------
     - task: AzureCLI@2
-      displayName: Wait for Blue Slot to be Ready
-      inputs:
-        azureSubscription: $(azureSubscription)
-        scriptType: bash
-        scriptLocation: inlineScript
-        inlineScript: |
-
-          echo "=== Waiting for blue slot to be ready ==="
-
-          BLUE_URL=$(az containerapp show \
-            --name $(containerAppName) \
-            --resource-group $(resourceGroup) \
-            --query properties.configuration.ingress.fqdn \
-            --output tsv)
-
-          for i in {1..10}; do
-            echo "Attempt $i — checking blue slot health..."
-            curl -f https://$BLUE_URL/health && echo "=== Blue slot is healthy ===" && break
-            sleep 15
-          done
-
-          echo "=== Blue slot FQDN: $BLUE_URL ==="
-
-    # ---------------------------------------------------
-    # Step 4: Switch Application Gateway back to BLUE  ← NEW
-    # ---------------------------------------------------
-    - task: AzureCLI@2
-      displayName: Switch Traffic Back to Blue
+      displayName: Switch Back to Blue
       inputs:
         azureSubscription: $(azureSubscription)
         scriptType: bash
@@ -392,6 +332,3 @@ stages:
             --resource-group $(resourceGroup) \
             --name $(appGatewayBackendPool) \
             --servers $BLUE_FQDN
-
-          echo "=== Traffic switched back to blue slot: $BLUE_FQDN ==="
-          echo "=== Blue/Green deployment complete ==="
