@@ -1,16 +1,16 @@
 trigger: none
 
 pool:
-  name: New-pool
+  name: Project-azure
 
 variables:
-  azureSubscription: 'chidu-arm'
-  resourceGroup: 'Chidu-RG'
+  azureSubscription: 'ado-azure'
+  resourceGroup: 'shivalik-rg'
 
-  acrName: 'medicalchatbotacrv2'
+  acrName: 'medchatbotacrv2prod'
   imageRepository: 'medical-chatbot'
-  containerAppName: 'medical-chatbot-container'
-  containerAppNameGreen: 'medical-chatbot-container-green'
+  containerAppName: 'medical-chatbot-blue'
+  containerAppNameGreen: 'medical-chatbot-green'
   appGatewayName: 'medical-chatbot-agw'
   appGatewayBackendPool: 'greenBackendPool'
 
