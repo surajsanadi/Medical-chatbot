@@ -64,6 +64,7 @@ stages:
     # SonarQube Prepare
     # ---------------------------------------------------
     - task: SonarQubePrepare@7
+      condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
       inputs:
         SonarQube: 'ado-sonar'
         scannerMode: 'CLI'
@@ -105,11 +106,13 @@ stages:
     # SonarQube Analyze
     # ---------------------------------------------------
     - task: SonarQubeAnalyze@7
+      condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
 
     # ---------------------------------------------------
     # SonarQube Publish
     # ---------------------------------------------------
     - task: SonarQubePublish@7
+      condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
       inputs:
         pollingTimeoutSec: '300'
 
